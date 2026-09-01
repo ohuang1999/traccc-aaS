@@ -47,3 +47,8 @@ performance/
 *.exe
 *.out
 *.app
+
+# detray_shm/: these are source, not build output. The blanket *.sh and *.txt
+# rules above would otherwise drop the scripts and the producer's CMakeLists.
+!detray_shm/*.sh
+!detray_shm/CMakeLists.txt

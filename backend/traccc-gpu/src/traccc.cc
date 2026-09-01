@@ -461,11 +461,24 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
             ("Failed to set CUDA device: " + std::string(cudaGetErrorString(err))).c_str());
     }
   
-    instance_state->traccc_gpu_standalone_ = std::make_unique<TracccGpuStandalone>(
-        &instance_state->host_mr_,
-        &instance_state->device_mr_,
-        instance_state->DeviceId()
-    );
+    // Geometry loading throws on failure, and this is a C API boundary: an
+    // escaping exception calls std::terminate and takes the whole tritonserver
+    // down with it. Turn it into a failed model load instead, so the server
+    // survives and the reason reaches the log.
+    try
+    {
+        instance_state->traccc_gpu_standalone_ = std::make_unique<TracccGpuStandalone>(
+            &instance_state->host_mr_,
+            &instance_state->device_mr_,
+            instance_state->DeviceId()
+        );
+    }
+    catch (const std::exception& e)
+    {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INTERNAL,
+            ("Failed to initialize traccc: " + std::string(e.what())).c_str());
+    }
     return nullptr;  // success
 }
 

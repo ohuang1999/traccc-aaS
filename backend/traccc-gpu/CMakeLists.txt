@@ -118,6 +118,7 @@ configure_file(src/libtriton_traccc.ldscript libtriton_traccc.ldscript COPYONLY)
 add_library(
   triton-traccc-backend SHARED
   src/traccc.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../standalone/src/shm_region.cpp
 )
 
 add_library(
@@ -163,6 +164,7 @@ target_link_libraries(
     traccc::cuda_utils
     traccc::options
     detray::io
+    rt          # shm_open, for the detray-in-shared-memory path
 )
 
 # must set algrebra puglin include array

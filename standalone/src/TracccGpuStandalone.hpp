@@ -61,6 +61,15 @@
 #include "traccc/io/utils.hpp"
 #include "traccc/io/csv/make_cell_reader.hpp"
 #include "traccc/io/read_detector.hpp"
+#include "traccc/geometry/detector_buffer.hpp"
+
+// Detray-in-shared-memory (sandbox_detray_shm phase D3)
+#include "shm_region.hpp"
+#include <detray/core/detail/container_buffers.hpp>
+#include <detray/version.hpp>
+#include <vecmem/version.hpp>
+#include <cstdlib>
+#include <cstring>
 #include "traccc/io/read_detector_description.hpp"
 
 // algorithm options
@@ -385,6 +394,10 @@ public:
 
     void initialize();
 
+    /// Adopt the detector from a /dev/shm region instead of parsing JSON.
+    /// Throws on any mismatch -- see the comment in the definition.
+    void adopt_detector_from_shm(const std::string& shm_name);
+
     TracccResults run(std::vector<traccc::io::csv::cell> cells, bool show_stats = false);
 
 };
@@ -447,14 +460,99 @@ void TracccGpuStandalone::initialize()
         m_geomIdMap[m_det_cond_storage.geometry_id()[i].value()] = i;
     }
 
-    traccc::io::read_detector(
-        m_detector, m_host_mr, m_detector_opts.detector_file,
-        m_detector_opts.material_file, m_detector_opts.grid_file);
-    m_device_detector =
-        traccc::buffer_from_host_detector(m_detector, *m_device_mr, m_copy);
+    // Two geometry sources. Setting TRACCC_DETRAY_SHM adopts an already-built
+    // detector from a shared-memory region; otherwise the original JSON path
+    // runs unchanged. Both are kept so the two can be compared on identical
+    // input -- a result with nothing to compare against proves nothing.
+    if (const char* shm_name = std::getenv("TRACCC_DETRAY_SHM")) {
+        adopt_detector_from_shm(shm_name);
+    } else {
+        traccc::io::read_detector(
+            m_detector, m_host_mr, m_detector_opts.detector_file,
+            m_detector_opts.material_file, m_detector_opts.grid_file);
+        m_device_detector =
+            traccc::buffer_from_host_detector(m_detector, *m_device_mr, m_copy);
+    }
     m_stream.synchronize();
 
     return;
+}
+
+/* Adopt a detray detector built by another process inside /dev/shm.
+ *
+ * No parsing happens here. The producer built the detector THROUGH a memory
+ * resource sitting on the region, so the payload is already laid out; all that
+ * crosses is the view -- a small bundle of pointers and sizes -- which is valid
+ * here only because both processes map at the identical detray_shm::FIXED_BASE.
+ *
+ * Every check below refuses the load. None is a warning: sharing bytes across a
+ * version gap gives a parse error, but sharing a constructed OBJECT across one
+ * gives silent memory corruption -- the layout differs, nothing throws, and the
+ * tracks are quietly wrong. There is no safe degraded mode for reading a struct
+ * with the wrong layout.
+ */
+void TracccGpuStandalone::adopt_detector_from_shm(const std::string& shm_name)
+{
+    const auto refuse = [&shm_name](const std::string& why) {
+        throw std::runtime_error("detray-shm: REFUSED to load " + shm_name +
+                                 " -- " + why);
+    };
+
+    void* base = detray_shm::map_region_shared(shm_name);
+    auto* hdr = static_cast<detray_shm::header*>(base);
+
+    if (hdr->magic != detray_shm::MAGIC) {
+        refuse("bad magic -- not a D1 region");
+    }
+    // Acquire pairs with the producer's release store: seeing ready == 1
+    // guarantees every field written before it is visible too.
+    if (__atomic_load_n(&hdr->ready, __ATOMIC_ACQUIRE) != 1u) {
+        refuse("region not published (torn or still being written)");
+    }
+    if (hdr->format_version != detray_shm::FORMAT_VERSION) {
+        refuse("format v" + std::to_string(hdr->format_version) + ", expected v" +
+               std::to_string(detray_shm::FORMAT_VERSION));
+    }
+    if (hdr->base_addr != reinterpret_cast<std::uint64_t>(base)) {
+        refuse("produced at a different base address -- every pointer inside "
+               "the region would be wrong");
+    }
+    if (hdr->detray_major != DETRAY_VERSION_MAJOR ||
+        hdr->detray_minor != DETRAY_VERSION_MINOR ||
+        hdr->detray_patch != DETRAY_VERSION_PATCH) {
+        refuse("detray " + std::to_string(hdr->detray_major) + "." +
+               std::to_string(hdr->detray_minor) + "." +
+               std::to_string(hdr->detray_patch) + " in region, " +
+               DETRAY_VERSION + " here");
+    }
+    if (hdr->vecmem_major != VECMEM_VERSION_MAJOR ||
+        hdr->vecmem_minor != VECMEM_VERSION_MINOR) {
+        refuse("vecmem version mismatch");
+    }
+
+    using view_t = traccc::itk_detector::view;
+    if (hdr->view_bytes != sizeof(view_t)) {
+        refuse("view is " + std::to_string(hdr->view_bytes) +
+               " bytes in region, " + std::to_string(sizeof(view_t)) + " here");
+    }
+
+    view_t view;
+    std::memcpy(&view, hdr->view, sizeof(view_t));
+
+    /* detray::get_buffer already accepts a view: buffer_from_host_detector()
+     * calls get_buffer(det, ...), which is itself defined as
+     * get_buffer(det.get_data(), ...). The host detector is only where the view
+     * usually comes from -- ours comes from the region instead, so no host
+     * detector is built at all. The host->device copy still happens: kernels
+     * need the detector in VRAM regardless. */
+    m_device_detector.set<traccc::itk_detector>(
+        detray::get_buffer(view, *m_device_mr, m_copy));
+
+    std::cout << "Adopted detector from " << shm_name << ": "
+              << (static_cast<double>(hdr->payload_bytes) / (1024.0 * 1024.0))
+              << " MB, " << hdr->n_volumes << " volumes, " << hdr->n_surfaces
+              << " surfaces, " << hdr->n_transforms
+              << " transforms -- no JSON parsed" << std::endl;
 }
 
 TracccResults TracccGpuStandalone::run(
