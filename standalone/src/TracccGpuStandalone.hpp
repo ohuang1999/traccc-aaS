@@ -502,7 +502,7 @@ void TracccGpuStandalone::adopt_detector_from_shm(const std::string& shm_name)
     auto* hdr = static_cast<detray_shm::header*>(base);
 
     if (hdr->magic != detray_shm::MAGIC) {
-        refuse("bad magic -- not a D1 region");
+        refuse("bad magic -- not a detray-shm region");
     }
     // Acquire pairs with the producer's release store: seeing ready == 1
     // guarantees every field written before it is visible too.
