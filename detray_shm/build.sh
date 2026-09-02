@@ -37,7 +37,18 @@ sed -i 's|/global/cfs/projectdirs/m3443/data/GNN4ITK-traccc/ITk_data/ATLAS-P2-RU
 grep -q '"/traccc/itk-geometry/"' "${BACKEND_SRC}/standalone/src/TracccGpuStandalone.hpp" \
     || { echo "FATAL: geoDir substitution did not apply"; exit 1; }
 
+# The backend's CMakeLists pulls three Triton repos with FetchContent. Inside the
+# image, git gets a 401 on the second request of the HTTP/2 handshake and starts
+# asking for a username no public repo needs. curl to the same URL returns 200
+# and the host's git works, so it is git's HTTP/2 path in this image that is
+# broken; forcing HTTP/1.1 fixes both ls-remote and shallow clone.
+# GIT_TERMINAL_PROMPT=0 turns any remaining failure into an error message
+# instead of a prompt that cannot be answered.
 apptainer exec --nv --bind "${BACKEND_SRC}:/src" --bind "${BACKEND_BUILD}:/build" \
+    --env GIT_TERMINAL_PROMPT=0 \
+    --env GIT_CONFIG_COUNT=1 \
+    --env GIT_CONFIG_KEY_0=http.version \
+    --env GIT_CONFIG_VALUE_0=HTTP/1.1 \
     "${SIF}" bash -lc '
   set -e
   cd /build
