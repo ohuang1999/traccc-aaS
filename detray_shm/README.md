@@ -61,8 +61,34 @@ One GPU node for everything: `/tmp` is node-local and the backend is
     ./build.sh               # backend, against the release
     ./run_server.sh          # JSON baseline — confirm READY first
 
-Then produce the region from an Athena job with `SharedMemoryRegion` set, and
-adopt it:
+### Producing the region from Athena
+
+The producer side is an Athena change and lives in Athena, not here. Until it is
+merged, it is on a branch:
+
+    https://gitlab.cern.ch/tihuang/athena  branch detray-shm-producer
+
+Build just that package on top of the same release — Athena and this server must
+run the same one, or the region's ABI gates will refuse it:
+
+    asetup main--ACTS,Athena,2026-09-07T2100
+    lsetup git
+    git atlas init-workdir ssh://git@gitlab.cern.ch:7999/tihuang/athena.git
+    cd athena && git checkout detray-shm-producer && git atlas addpkg ActsGPUGeometry
+    cd .. && mkdir build && cd build
+    cmake ../athena/Projects/WorkDir && make -j$(nproc)
+    source ./*/setup.sh
+
+Then run any job that configures `JSONDeviceDetectorDescriptionProviderSvc` with
+`SharedMemoryRegion` set. The package ships a minimal one — a zero-event job that
+does nothing but build the detector into the region:
+
+    athena.py ../athena/Tracking/Acts/ActsGPUGeometry/test/ActsDeviceSharedMemoryTest.py
+
+It prints the region it wrote and the counts it published. The region deliberately
+outlives the job.
+
+### Adopting it
 
     SHM=/athena_itk_detector ./run_server.sh
 

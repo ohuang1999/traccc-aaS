@@ -20,6 +20,10 @@ if [ -z "${REPO:-}" ]; then
         exit 1
     fi
 fi
+# A dated nightly snapshot: cvmfs prunes these, so this will stop resolving
+# eventually. Any main--ACTS snapshot carrying ActsGPUGeometry works -- list them
+# with `ls /cvmfs/atlas-nightlies.cern.ch/repo/sw/main--ACTS_Athena_*` -- but the
+# producer and this server must use the SAME one, or the ABI gates refuse.
 RELEASE="${RELEASE:-main--ACTS,Athena,2026-09-07T2100}"
 # GEO must hold detray_detector_{geometry,material_maps,surface_grids}.json,
 # ITk_bfield.cvf, ITk_digitization_config.json and athenaIdentifierToDetrayMap.txt.
