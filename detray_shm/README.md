@@ -115,27 +115,43 @@ The line only this path prints:
     Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
 
-Then send it work. The client — an Athena job that converts RDOs to cells, calls
-the server and writes tracks — is already in the release as `TracccTritonClient`,
-so nothing extra needs building for it:
+Then send it work. The client is already in the release as `TracccTritonClient`,
+so nothing extra needs building:
 
-    TracccTritonClient.TracccTritonClientConfig.TritonTracccTrackMakerCfg
+    Reco_tf.py --CA \
+      --inputRDOFile <an ITk RDO> --outputAODFile AOD.pool.root \
+      --steering doRAWtoALL \
+      --preInclude "TracccTritonClient.TracccTritonClientConfigFlags.tracccTritonFlagsPreInclude" \
+      --postInclude "TracccTritonClient.TracccTritonClientConfig.TritonTracccTrackMakerCfg" \
+      --maxEvents 5
 
-pointed at the server through `flags.Tracking.Traccc.Triton.model` and
-`.url`. Run it as an ordinary reconstruction job over an ITk RDO.
-
-Note that `TritonTracccTrackMakerCfg` configures
-`JSONDeviceDetectorDescriptionProviderSvc` itself — the same service the producer
-patch changes. So the client job also builds a detector, and setting
-`SharedMemoryRegion` there is what makes a job produce the region.
+The `preInclude` is not optional: the Triton flags live in the package rather
+than centrally, so they have to be registered before anything reads them. Their
+defaults — `traccc-gpu` on `localhost:8001` — already match what
+`run_server.sh` starts, so no `--preExec` is needed when both are on one node.
+Elsewhere, override `flags.Tracking.Traccc.Triton.url` and `.port`.
 
 `Number of tracks found:` in the log is the number to compare between the two
 geometry sources. Expect agreement, not equality — traccc is nondeterministic.
 
-The tracks measured above were produced with an older client (release 25.0.45
-plus a development branch, which is what predates `TracccTritonClient` being
-merged). The in-release client is the right one to use now, but has not been run
-against this server here.
+### Which node runs what
+
+**The producer must be on the server's node.** `/dev/shm` is per-machine, so a
+region written anywhere else is invisible to the server.
+
+**The client needs a GPU too**, which is easy to miss: `TritonTracccTrackMakerCfg`
+configures `JSONDeviceDetectorDescriptionProviderSvc`, and that pulls in CUDA
+memory resources. It is not a pure CPU job in this configuration. It can run on a
+different GPU node if you point the flags at the server, but the simplest
+arrangement is all three on one node.
+
+That the client configures the same service is worth noticing for another reason:
+**the client builds its own detector as well.** This work removes the server's
+parse; the client's is untouched, and nobody has measured it.
+
+The measurements above used an older client — release 25.0.45 plus a development
+branch, from before `TracccTritonClient` was merged. The in-release client is the
+right one to use now, but has not been run against this server here.
 
 ## What the release needed repairing
 
