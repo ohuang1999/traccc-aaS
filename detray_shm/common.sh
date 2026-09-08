@@ -1,67 +1,64 @@
-# Shared settings for the D3 scripts. Sourced, never run directly.
+# Shared settings for the release-build scripts. Sourced, never run directly.
 #
-# This folder works both inside the traccc-aaS repo and beside it, so the repo is
-# located rather than hard-coded. Everything else is an override-able default:
-# set any of these in the environment to point elsewhere.
+# These scripts build and run the traccc Triton backend against an ATLAS ACTS
+# release. The release ships tritonserver, traccc, detray, vecmem, covfie and the
+# Triton API packages, all built by one team with one compiler -- so the server
+# ends up on exactly the stack Athena uses, and the region's ABI gates pass by
+# construction rather than by keeping two stacks in step.
 
-D3_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RB_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- the traccc-aaS repo (holds the backend and shm_region.{hpp,cpp}) --------
+# Locate the traccc-aaS repo, whether this folder sits inside it or beside it.
 _marker="backend/traccc-gpu/CMakeLists.txt"
 if [ -z "${REPO:-}" ]; then
-    if   [ -f "${D3_HERE}/../${_marker}" ];                then REPO="$(cd "${D3_HERE}/.." && pwd)"
-    elif [ -f "${D3_HERE}/../../${_marker}" ];             then REPO="$(cd "${D3_HERE}/../.." && pwd)"
-    elif [ -f "${D3_HERE}/../../traccc-aaS/${_marker}" ];  then REPO="$(cd "${D3_HERE}/../../traccc-aaS" && pwd)"
+    if   [ -f "${RB_HERE}/../${_marker}" ];               then REPO="$(cd "${RB_HERE}/.." && pwd)"
+    elif [ -f "${RB_HERE}/../../${_marker}" ];            then REPO="$(cd "${RB_HERE}/../.." && pwd)"
+    elif [ -f "${RB_HERE}/../../traccc-aaS/${_marker}" ]; then REPO="$(cd "${RB_HERE}/../../traccc-aaS" && pwd)"
     else
-        echo "FATAL: cannot find the traccc-aaS repo near ${D3_HERE}." >&2
+        echo "FATAL: cannot find the traccc-aaS repo near ${RB_HERE}." >&2
         echo "       Set REPO=/path/to/traccc-aaS and re-run." >&2
         exit 1
     fi
 fi
-export REPO
-
-# --- the container image (11 GB; lives outside the repo) --------------------
-SIF="${SIF:-/eos/home-t/${USER}/Tracking_aaS/traccc-aas.sif}"
-export SIF
-
-# --- ITk geometry ------------------------------------------------------------
-# GEO must hold detray_detector_{geometry,material_maps,surface_grids}.json,
-# ITk_bfield.cvf, ITk_digitization_config.json and athenaIdentifierToDetrayMap.txt.
-# prepare_geometry.sh copies them from GEO_SRC to node-local disk.
-GEO_SRC="${GEO_SRC:-/eos/project/a/atlas-eftracking/GPU/ITk_data/FinalReport}"
+RELEASE="${RELEASE:-main--ACTS,Athena,2026-09-07T2100}"
 GEO="${GEO:-/tmp/${USER}/itk-geo}"
-export GEO_SRC GEO
 
-# --- node-local build areas (/tmp is per-machine; so is the build) ----------
-BACKEND_SRC="${BACKEND_SRC:-/tmp/${USER}/d3_backend_src}"
-BACKEND_BUILD="${BACKEND_BUILD:-/tmp/${USER}/d3_backend_build}"
-PRODUCER_SRC="${PRODUCER_SRC:-/tmp/${USER}/d3_producer_src}"
-PRODUCER_BUILD="${PRODUCER_BUILD:-/tmp/${USER}/d3_producer_build}"
-MODELS="${MODELS:-/tmp/${USER}/d3_models}"
-export BACKEND_SRC BACKEND_BUILD PRODUCER_SRC PRODUCER_BUILD MODELS
+# Node-local: /tmp is per-machine, and the backend is compiled -march=native.
+BACKEND_SRC="${BACKEND_SRC:-/tmp/${USER}/rel_backend_src}"
+BACKEND_BUILD="${BACKEND_BUILD:-/tmp/${USER}/rel_backend_build}"
+MODELS="${MODELS:-/tmp/${USER}/rel_models}"
 
-# --- the shared region -------------------------------------------------------
-SHM="${SHM:-}"                       # empty = JSON path; set to adopt a region
-REGION_NAME="${REGION_NAME:-/d3_itk_detector}"
-REGION_GB="${REGION_GB:-2}"
-export SHM REGION_NAME REGION_GB
+# The region is produced by Athena (see sandbox_detray_shm/d4_athena), not by
+# anything here. SHM names the region to adopt; empty means parse JSON instead.
+SHM="${SHM:-}"
 
-# --- Triton ports ------------------------------------------------------------
-# Something system-wide listens on 8000 on every lxplus node, and Triton treats a
-# failed HTTP bind as fatal -- it reports the model READY and then exits. 8001
-# and 8002 are free, so a client using the default gRPC port still works.
-HTTP_PORT="${HTTP_PORT:-8010}"
+# The release's tritonserver is built WITHOUT HTTP or metrics -- it accepts only
+# gRPC options. That also makes the lxplus port-8000 problem irrelevant here.
 GRPC_PORT="${GRPC_PORT:-8001}"
-METRICS_PORT="${METRICS_PORT:-8002}"
-export HTTP_PORT GRPC_PORT METRICS_PORT
 
-d3_require_sif() {
-    [ -f "${SIF}" ] || { echo "FATAL: no image at ${SIF}. Set SIF=/path/to/traccc-aas.sif" >&2; exit 1; }
+# atlasLocalSetup.sh and asetup return non-zero on success paths, so they must
+# not run under `set -e` -- run_kit/config.sh carries the same warning. Sets
+# AtlasVersion, BINARY_TAG, AtlasExternalsArea, CMAKE_PREFIX_PATH, the LCG
+# compiler and CUDA.
+rb_asetup() {
+    set +e
+    export ATLAS_LOCAL_ROOT_BASE=/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+    source "${ATLAS_LOCAL_ROOT_BASE}/user/atlasLocalSetup.sh" --quiet >/dev/null 2>&1
+    asetup ${RELEASE} >/dev/null 2>&1
+    set -e
+    [ -n "${AtlasVersion}" ] || { echo "FATAL: asetup ${RELEASE} failed" >&2; exit 1; }
+    EXT="${AtlasExternalsArea}/InstallArea/${BINARY_TAG}"
+    # asetup puts only Athena's own areas on CMAKE_PREFIX_PATH; LCG packages
+    # reach Athena through its own cmake layer, which a bare project does not
+    # use. Without this, Boost resolves to the system 1.75 instead of 1.91.
+    LCG=$(echo "${ROOT_INCLUDE_PATH}" | tr ':' '\n' \
+          | grep -oE "^.*/${BINARY_TAG}" | sort -u | tr '\n' ';')
+    export EXT LCG
 }
 
-d3_require_geo() {
+rb_require_geo() {
     [ -f "${GEO}/detray_detector_geometry.json" ] || {
         echo "FATAL: no geometry in ${GEO}." >&2
-        echo "       Run ${D3_HERE}/prepare_geometry.sh on this node." >&2
+        echo "       Copy it from \$GEO_SRC, or run run_kit/00_prepare.sh." >&2
         exit 1; }
 }

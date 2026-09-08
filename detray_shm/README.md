@@ -1,153 +1,112 @@
-# Sharing a detray detector through shared memory
+# Sharing the detray detector through memory
 
-Today the ITk geometry reaches the traccc Triton backend as JSON — about
-0.80 GiB across three files — which the backend parses at startup into its own
-private host detector. Because `TracccGpuStandalone` is built per Triton
-*instance*, `instance_group { count: N }` means N parses and N detectors in RAM.
+The ITk geometry reaches the traccc Triton backend as JSON — about 0.80 GiB
+across three files — which the backend parses at startup into its own private
+detector. Athena has already built that same detector a moment earlier, so the
+parse produces nothing that did not exist.
 
-This folder does it differently: a producer builds the detector **directly inside
-a `/dev/shm` region**, and the backend maps that region and uses the detector
-without parsing anything. No serialization step exists anywhere — the detector is
-allocated through a memory resource that hands out shared memory, so it is in
-shared memory the moment construction finishes.
+Instead: **Athena builds the detector directly inside a `/dev/shm` region, and the
+server maps that region and uses it without parsing anything.** No serialization
+step exists anywhere. The detector is allocated through a memory resource that
+hands out shared memory, so it is in shared memory the moment construction
+finishes.
 
-| | JSON path | shared region |
+| | JSON | shared region |
 |---|---|---|
-| model load, in the image (lxplus901) | 33.3 s | **13.5 s** |
-| model load, on the ATLAS release (lxplus902) | 29.1 s | **13.2 s** |
-| geometry size | 0.80 GiB of JSON | **246 MB** in RAM |
+| model load | 29.1 s | **13.0 s** |
+| geometry | 0.80 GiB of JSON | **246 MB** resident |
 
-Track counts match the JSON path, verified with the Athena client.
+Measured on lxplus902, Tesla T4, 2026-09-08. Track counts match the JSON path.
 
-**Two ways to build this, and `release/` is the one to use.** The scripts here
-build against the `traccc-aas.sif` image; those in `release/` build against an
-ATLAS ACTS release, which ships `tritonserver` *and* traccc/detray/vecmem
-together. Building there puts the server on exactly the stack Athena uses, so the
-region's version gates pass by construction instead of by keeping two stacks in
-step — and Athena itself can then be the producer. See `release/README.md`.
+## The two halves
 
-## How it works
+**The producer is Athena.** `JSONDeviceDetectorDescriptionProviderSvc` gains a
+`SharedMemoryRegion` property; when set, `read_detector` allocates through the
+region instead of ordinary host memory, and the service writes a header and
+publishes it. That change lives in Athena, not here — see
+`sandbox_detray_shm/d4_athena` in the parent workspace.
 
-    producer                                backend (tritonserver)
-    --------                                ----------------------
-    mmap /dev/shm/<name> at FIXED_BASE      mmap the SAME region, same address
-      |                                       |
-    shm_memory_resource (a bump allocator)  validate the header:
-      |                                       magic · ready · format
-      |                                       base address · detray + vecmem
-      |                                       versions · view size
-    read_detector(det, shm_mr, json...)       (any mismatch REFUSES the load)
-      |                                       |
-    write header: counts, versions, view    memcpy the view out of the header
-      |                                       |
-    ready = 1  (atomic release)             detray::get_buffer(view, ...) -> GPU
+**The consumer is the backend in this repo.** `initialize()` branches on
+`TRACCC_DETRAY_SHM`: set, it validates the header and hands the region's view
+straight to the GPU; unset, the original JSON path runs unchanged.
 
-The *payload* — volumes, surfaces, transforms, masks, materials, accelerators —
-lives in the region, one copy, read by every consumer. The *handle* (the view: a
-small bundle of pointers and sizes) is per-process and about a kilobyte. That
-split is what makes the whole thing work.
+    standalone/src/shm_region.{hpp,cpp}       region layout and mapping
+    standalone/src/shm_memory_resource.hpp    ~30 lines: a bump allocator that
+                                              is a vecmem memory resource
+    standalone/src/TracccGpuStandalone.hpp    the consumer path
+    backend/traccc-gpu/src/traccc.cc          model init wrapped in try/catch
 
-**Why the fixed address.** detray's containers hold raw pointers, so a view is
-only meaningful in the process that produced it. Rather than store offsets and
-rebuild each sub-view, this version has both processes map at the same
-hard-coded `FIXED_BASE`, which keeps every pointer valid and lets the view be
-copied verbatim. Verified free inside a running `tritonserver`. Relocation is the
-follow-up; until it exists, `MAP_FIXED_NOREPLACE` can lose to any mapping that
-happens to sit there.
+Athena vendors the first two, because both sides must agree on the region layout
+exactly. They want one upstream home; detray is the natural candidate.
 
-**Why the version gates are absolute.** Sharing *bytes* across a version gap
-gives a parse error. Sharing a constructed *object* across one gives silent
-memory corruption: the layout differs, nothing throws, and the tracks are quietly
-wrong. There is no safe degraded mode, so every check refuses the load.
+## Built against the release, not the image
 
-## Files
+These scripts build against an ATLAS ACTS release rather than `traccc-aas.sif`.
+The release ships `tritonserver` **and** traccc, detray, vecmem and covfie, built
+together with one compiler — so the server runs on exactly the stack Athena does.
 
-    common.sh              shared settings; locates the repo, holds every default
-    prepare_geometry.sh    stage the ITk geometry on node-local disk (once per node)
-    build.sh               rebuild the Triton backend outside the image
-    run_server.sh          start tritonserver against that backend
-    build_producer.sh      build the producer
-    run_producer.sh        build the detector into /dev/shm, leave it there
-    producer.cpp           the producer (stand-in for Athena)
-    shm_memory_resource.hpp   ~30 lines: a vecmem resource over the mapped region
-    CMakeLists.txt         builds the producer only
-
-The backend side lives in the repo proper:
-
-    standalone/src/shm_region.{hpp,cpp}      region layout + mapping
-    standalone/src/TracccGpuStandalone.hpp   initialize() branches on TRACCC_DETRAY_SHM
-    backend/traccc-gpu/src/traccc.cc         model init wrapped in try/catch
-
-`shm_region.hpp` is deliberately **not** duplicated here: `build_producer.sh`
-stages the repo's copy in, so the producer and the backend compile against the
-same definition. Two copies free to drift would disagree about the region layout
-in silence — the exact failure this design exists to prevent.
+That is not a convenience. The image and the release are separately built and had
+already diverged: vecmem 1.27 changed `jagged_vector_view::size_type` from
+`std::size_t` to `unsigned int`, and detray's grids are jagged containers, so a
+region written by one and read by the other would resolve pointers at the wrong
+offsets — silently. The header's version gates catch it, correctly. But with two
+stacks the chase never ends; with one, the gates pass by construction.
 
 ## Running it
 
-Everything is override-able through the environment; `common.sh` lists the
-defaults. The image (`traccc-aas.sif`, 11 GB) lives outside the repo — point
-`SIF` at yours.
+One GPU node for everything: `/tmp` is node-local and the backend is
+`-march=native`.
 
-    ./prepare_geometry.sh        # once per node
-    ./build.sh                   # 10-20 min the first time
+    ./prepare_geometry.sh    # once per node
+    ./build.sh               # backend, against the release
+    ./run_server.sh          # JSON baseline — confirm READY first
 
-Baseline first — the JSON path must work before the new one means anything:
+Then produce the region from Athena (`d4_athena/02_run_producer.sh`) and adopt it:
 
-    ./run_server.sh              # expect: traccc-gpu | 1 | READY
+    SHM=/athena_itk_detector ./run_server.sh
 
-Then the shared region:
+Look for the line only this path prints:
 
-    ./build_producer.sh
-    ./run_producer.sh            # prints parse time, counts, real RAM used
-    SHM=/d3_itk_detector ./run_server.sh
-
-Look for the line only the new path prints:
-
-    Adopted detector from /d3_itk_detector: 379 volumes, 60911 surfaces,
+    Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
 
-Stop the server between runs (Ctrl-C); `run_server.sh` refuses immediately if a
-port is still held rather than failing after a 35-second model load.
+## What the release needed repairing
 
-## Constraints worth knowing
+All five are confined to a staged copy by `release-build.patch`; the repo itself
+is untouched by them:
 
-- **Build and run on the same node.** The backend compiles `-march=native`, and
-  `/tmp` is node-local anyway.
-- **Port 8000 is taken on every lxplus node** by a system service. Triton treats
-  a failed HTTP bind as fatal — it reports READY, then exits. Hence
-  `--http-port=8010`; gRPC 8001 is free so ordinary clients are unaffected.
-- **`-Werror` is on** in the backend's CMakeLists. Any warning fails the build.
-- **The image is never modified.** It is read-only and ships its own
-  `libtriton_traccc.so`; `run_server.sh` hands Triton a model repository
-  containing ours instead.
-- **`backend/Dockerfile` line 27** rewrites a hard-coded NERSC geometry path at
-  image build time, and that edit exists only in the Dockerfile. Building the
-  repo as-is produces a backend that aborts on a missing `ITk_bfield.cvf`, so
-  `build.sh` applies the same substitution to its staged copy.
+1. **`traccc::opts::detector` → plain strings.** The release's traccc has no
+   `options` component. The struct only held five file paths.
+2. **`traccc::performance` dropped** from the link — also absent, and unused.
+3. **TritonCommon.** Its `Config.cmake` references a `triton-common-json` target
+   missing from its installed `Targets.cmake`, *and* uses that target as its
+   include guard — so `find_package` either errors or silently imports nothing.
+   Include the targets file directly and declare the header-only target by hand.
+4. **`find_package(Threads)` and `find_package(CUDAToolkit)`** added.
+5. **The Eigen workaround generalised.** The exported targets advertise an
+   `eigen3` directory inside the ACTS include tree that the release does not
+   install.
 
-## Known defects and open questions
+Items 3 and 5 are ATLAS externals packaging bugs, worth reporting upstream.
 
-- **`payload_bytes` in the header is wrong.** It reports the whole region
-  (2048 MB), not the detector, because `vecmem::contiguous_memory_resource`
-  claims its entire chunk from upstream up front — so `used()` measures the
-  reservation. The 246 MB above came from `du -h /dev/shm/<region>` versus
-  `du -h --apparent-size`, which also shows the oversized reservation costs no
-  RAM: tmpfs only commits pages that are written. Fix: drop the wrapper and pass
-  `shm_memory_resource` straight to `read_detector` — a bump allocator is
-  contiguous by construction, so the wrapper buys nothing and hides the number
-  worth reporting.
-- **`map_region_shared()` is untested.** It maps once per process so
-  `instance_group { count: N }` works, but has only run with `count: 1`.
-- **The mapping is never released.** Fine while the region outlives the server,
-  but lifecycle — IOV changes, producer restart, crash cleanup — is unowned.
-- **Only `traccc::itk_detector` is handled.** The adopt path hard-codes that
-  type while the JSON path is polymorphic over `detector_type_list`.
-- **`read_detector_description` and the 58,700-entry identifier map** are
-  separate payloads and still come from JSON. Sharing the detector does not share
-  them; that is the remaining 13.5 s.
-- **Version lockstep — only for the image path.** The image and Athena's release
-  are separately built stacks that must be kept in step, and they have already
-  diverged (vecmem 1.25 vs 1.27 changed `jagged_vector_view`'s layout). The gates
-  refuse across that gap, correctly. `release/` removes the problem rather than
-  managing it.
+Two environment notes: `asetup` puts only Athena's own areas on
+`CMAKE_PREFIX_PATH`, so LCG paths are derived from `$ROOT_INCLUDE_PATH` (without
+which Boost resolves to the system 1.75 instead of the release's 1.91); and the
+release's `tritonserver` is built without HTTP or metrics, accepting only gRPC.
+
+## Known limits
+
+- **The fixed address is a shortcut.** Both processes map at
+  `0x2000_0000_0000` so detray's stored pointers stay valid, rather than storing
+  offsets and rebuilding the sub-views. Verified free in a full Athena job and in
+  `tritonserver`, but rebuilding at an arbitrary base is the durable answer.
+- **`map_region_shared()` is untested** beyond `instance_group { count: 1 }`. It
+  maps once per process so N model instances share one mapping — necessary
+  because an address can only be claimed once per address space.
+- **Only `traccc::itk_detector`** is handled on the adopt path, while the JSON
+  path is polymorphic over `detector_type_list`.
+- **Lifecycle is unowned.** The mapping is never released, and nothing handles a
+  producer restart, an IOV change, or cleanup after a crash.
+- **The detector is not the whole geometry.** `read_detector_description` and the
+  58,700-entry identifier map are separate payloads and still come from JSON.
+  That is most of the remaining 13 s.
