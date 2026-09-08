@@ -20,11 +20,11 @@ Measured on lxplus902, Tesla T4, 2026-09-08. Track counts match the JSON path.
 
 ## The two halves
 
-**The producer is Athena.** `JSONDeviceDetectorDescriptionProviderSvc` gains a
-`SharedMemoryRegion` property; when set, `read_detector` allocates through the
-region instead of ordinary host memory, and the service writes a header and
-publishes it. That change lives in Athena, not here — see
-`sandbox_detray_shm/d4_athena` in the parent workspace.
+**The producer is Athena.** `JSONDeviceDetectorDescriptionProviderSvc`
+(`Tracking/Acts/ActsGPUGeometry`) gains a `SharedMemoryRegion` property; when
+set, `read_detector` allocates through the region instead of ordinary host
+memory, and the service writes a header and publishes it. That change lives in
+Athena, not in this repo.
 
 **The consumer is the backend in this repo.** `initialize()` branches on
 `TRACCC_DETRAY_SHM`: set, it validates the header and hands the region's view
@@ -61,7 +61,8 @@ One GPU node for everything: `/tmp` is node-local and the backend is
     ./build.sh               # backend, against the release
     ./run_server.sh          # JSON baseline — confirm READY first
 
-Then produce the region from Athena (`d4_athena/02_run_producer.sh`) and adopt it:
+Then produce the region from an Athena job with `SharedMemoryRegion` set, and
+adopt it:
 
     SHM=/athena_itk_detector ./run_server.sh
 

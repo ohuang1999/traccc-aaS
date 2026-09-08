@@ -63,7 +63,7 @@
 #include "traccc/io/read_detector.hpp"
 #include "traccc/geometry/detector_buffer.hpp"
 
-// Detray-in-shared-memory (sandbox_detray_shm phase D3)
+// Adopting a detray detector from shared memory instead of parsing JSON.
 #include "shm_region.hpp"
 #include <detray/core/detail/container_buffers.hpp>
 #include <detray/version.hpp>

@@ -4,8 +4,9 @@
 # libraries and the compiler.
 #
 # Set SHM to adopt the detector from a /dev/shm region instead of parsing JSON.
-# The region is produced by Athena -- see sandbox_detray_shm/d4_athena -- and must
-# come from a job running this SAME release, or the ABI gates will refuse it.
+# The region is produced by Athena: a JSONDeviceDetectorDescriptionProviderSvc
+# with SharedMemoryRegion set (see the README). It must come from a job running
+# this SAME release, or the ABI gates will refuse it.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/common.sh"

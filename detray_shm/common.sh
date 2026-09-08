@@ -21,6 +21,10 @@ if [ -z "${REPO:-}" ]; then
     fi
 fi
 RELEASE="${RELEASE:-main--ACTS,Athena,2026-09-07T2100}"
+# GEO must hold detray_detector_{geometry,material_maps,surface_grids}.json,
+# ITk_bfield.cvf, ITk_digitization_config.json and athenaIdentifierToDetrayMap.txt.
+# prepare_geometry.sh stages them from GEO_SRC onto node-local disk.
+GEO_SRC="${GEO_SRC:-/eos/project/a/atlas-eftracking/GPU/ITk_data/FinalReport}"
 GEO="${GEO:-/tmp/${USER}/itk-geo}"
 
 # Node-local: /tmp is per-machine, and the backend is compiled -march=native.
@@ -28,8 +32,9 @@ BACKEND_SRC="${BACKEND_SRC:-/tmp/${USER}/rel_backend_src}"
 BACKEND_BUILD="${BACKEND_BUILD:-/tmp/${USER}/rel_backend_build}"
 MODELS="${MODELS:-/tmp/${USER}/rel_models}"
 
-# The region is produced by Athena (see sandbox_detray_shm/d4_athena), not by
-# anything here. SHM names the region to adopt; empty means parse JSON instead.
+# The region is produced by Athena, not by anything here: a
+# JSONDeviceDetectorDescriptionProviderSvc with its SharedMemoryRegion property
+# set. SHM names the region to adopt; empty means parse JSON instead.
 SHM="${SHM:-}"
 
 # The release's tritonserver is built WITHOUT HTTP or metrics -- it accepts only
@@ -37,7 +42,7 @@ SHM="${SHM:-}"
 GRPC_PORT="${GRPC_PORT:-8001}"
 
 # atlasLocalSetup.sh and asetup return non-zero on success paths, so they must
-# not run under `set -e` -- run_kit/config.sh carries the same warning. Sets
+# not run under `set -e`, or the script exits silently at that point. Sets
 # AtlasVersion, BINARY_TAG, AtlasExternalsArea, CMAKE_PREFIX_PATH, the LCG
 # compiler and CUDA.
 rb_asetup() {
@@ -59,6 +64,6 @@ rb_asetup() {
 rb_require_geo() {
     [ -f "${GEO}/detray_detector_geometry.json" ] || {
         echo "FATAL: no geometry in ${GEO}." >&2
-        echo "       Copy it from \$GEO_SRC, or run run_kit/00_prepare.sh." >&2
+        echo "       Run prepare_geometry.sh on this node." >&2
         exit 1; }
 }
