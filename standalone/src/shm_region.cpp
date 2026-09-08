@@ -57,6 +57,7 @@ void* map_region(const std::string& shm_name, std::size_t bytes, bool create) {
     return base;
 }
 
+#ifndef DETRAY_SHM_NO_SHARED_MAPPING
 void* map_region_shared(const std::string& shm_name) {
     static std::mutex mtx;
     static std::map<std::string, void*> mapped;
@@ -70,6 +71,7 @@ void* map_region_shared(const std::string& shm_name) {
     mapped.emplace(shm_name, base);
     return base;
 }
+#endif  // DETRAY_SHM_NO_SHARED_MAPPING
 
 void unmap_region(void* base, std::size_t bytes) {
     if (base) {

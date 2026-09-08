@@ -5,9 +5,9 @@
  *   [ 0 .. HEADER_BYTES )   header (below), fixed size, never grows
  *   [ HEADER_BYTES .. )     payload — every byte the detray detector owns
  *
- * The payload is produced by allocating the detector THROUGH a
- * vecmem::contiguous_memory_resource sitting on this region, so all of
- * detray's containers land inside it, contiguous, in one shot.
+ * The payload is produced by allocating the detector THROUGH a memory resource
+ * sitting on this region, so all of detray's containers land inside it,
+ * contiguous, in one shot -- there is no serialization step anywhere.
  */
 #pragma once
 
@@ -80,7 +80,14 @@ void  unmap_region(void* base, std::size_t bytes);
  * detector is read-only after construction, all instances can share one
  * mapping. Never unmapped: the region must outlive every instance holding a
  * view into it, and the process exit reclaims it anyway.
+ *
+ * Consumers only. Producers call map_region directly, and Athena -- which is a
+ * producer -- excludes this via DETRAY_SHM_NO_SHARED_MAPPING: its static cache
+ * is mutex-guarded but ATLAS's thread-safety checker cannot see that, and
+ * warning about a function nobody calls helps no one.
  */
+#ifndef DETRAY_SHM_NO_SHARED_MAPPING
 void* map_region_shared(const std::string& shm_name);
+#endif
 
 }  // namespace detray_shm

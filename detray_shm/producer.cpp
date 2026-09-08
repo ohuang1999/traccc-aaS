@@ -3,9 +3,9 @@
  *
  * Stands in for Athena, which will eventually do this itself (phase D4). The
  * only difference from the backend's own initialize() is the memory resource:
- * instead of the default host resource, read_detector allocates through a
- * contiguous resource sitting on a shared-memory region, so the detector is
- * built in shared memory rather than copied there afterwards.
+ * instead of the default host resource, read_detector allocates through a bump
+ * allocator sitting on a shared-memory region, so the detector is built in
+ * shared memory rather than copied there afterwards.
  *
  * shm_region.hpp is deliberately NOT a local copy -- it is taken from
  * ../../traccc-aaS/standalone/src/, the same header the backend compiles
@@ -22,7 +22,6 @@
 #include <traccc/io/read_detector.hpp>
 
 #include <detray/version.hpp>
-#include <vecmem/memory/contiguous_memory_resource.hpp>
 #include <vecmem/version.hpp>
 
 #include <chrono>
@@ -68,13 +67,21 @@ int main(int argc, char** argv) {
     std::byte* payload = static_cast<std::byte*>(base) + detray_shm::HEADER_BYTES;
     const std::size_t payload_capacity = region_bytes - detray_shm::HEADER_BYTES;
 
+    /* shm_memory_resource is handed to read_detector directly, NOT wrapped in
+     * vecmem::contiguous_memory_resource.
+     *
+     * The wrapper exists to pack many scattered allocations into one block, but
+     * a bump allocator is contiguous by construction, so it adds nothing here.
+     * It also takes its entire chunk from upstream on construction, which made
+     * used() report the whole 2 GB reservation instead of the ~250 MB the
+     * detector occupies -- the header's payload_bytes was measuring the wrong
+     * thing. */
     detray_shm::shm_memory_resource shm_mr{payload, payload_capacity};
-    vecmem::contiguous_memory_resource cmr{shm_mr, payload_capacity};
 
-    // ---- the one line that differs from the backend: `cmr`, not a host mr ----
+    // ---- the one line that differs from the backend: shm_mr, not a host mr ----
     const auto t0 = std::chrono::high_resolution_clock::now();
     traccc::host_detector detector;
-    traccc::io::read_detector(detector, cmr, geometry_file, material_file,
+    traccc::io::read_detector(detector, shm_mr, geometry_file, material_file,
                               grid_file);
     const double parse_ms = ms_since(t0);
     std::cout << "read_detector: " << parse_ms << " ms  (this is the cost the "

@@ -1,0 +1,160 @@
+--- a/backend/traccc-gpu/CMakeLists.txt
++++ b/backend/traccc-gpu/CMakeLists.txt
+@@ -75,27 +75,36 @@
+ # FetchContent requires us to include the transitive closure of all
+ # repos that we depend on so that we can override the tags.
+ #
+-include(FetchContent)
++# Triton's API packages come from the ATLAS release rather than GitHub. The
++# release ships TritonBackend/TritonCore/TritonCommon already built with the same
++# compiler as everything else here, so there is nothing to download and no chance
++# of a toolchain mismatch.
++# Triton's API packages come from the ATLAS release rather than GitHub.
++#
++# TritonCommon needs handling: its Config.cmake references
++# TritonCommon::triton-common-json, which is absent from the installed
++# Targets.cmake -- a gap in the ATLAS externals packaging -- AND it uses that same
++# target as its include guard. So find_package(TritonCommon) either errors on the
++# missing target, or, if the target is pre-defined, silently imports nothing.
++# Including the targets file directly sidesteps both. The json header
++# (triton/common/triton_json.h) IS installed and is header-only, so declaring the
++# interface target by hand is enough; rapidjson comes from LCG.
++find_file(TRITON_COMMON_TARGETS TritonCommonTargets.cmake
++          PATH_SUFFIXES lib/cmake/TritonCommon REQUIRED)
++include(${TRITON_COMMON_TARGETS})
++
++if(NOT TARGET TritonCommon::triton-common-json)
++  find_path(TRITON_JSON_INCLUDE triton/common/triton_json.h REQUIRED)
++  find_path(RAPIDJSON_INCLUDE rapidjson/document.h REQUIRED)
++  add_library(TritonCommon::triton-common-json INTERFACE IMPORTED)
++  set_target_properties(TritonCommon::triton-common-json PROPERTIES
++    INTERFACE_INCLUDE_DIRECTORIES "${TRITON_JSON_INCLUDE};${RAPIDJSON_INCLUDE}")
++endif()
+ 
+-FetchContent_Declare(
+-  repo-common
+-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
+-  GIT_TAG ${TRITON_COMMON_REPO_TAG}
+-  GIT_SHALLOW ON
+-)
+-FetchContent_Declare(
+-  repo-core
+-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
+-  GIT_TAG ${TRITON_CORE_REPO_TAG}
+-  GIT_SHALLOW ON
+-)
+-FetchContent_Declare(
+-  repo-backend
+-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
+-  GIT_TAG ${TRITON_BACKEND_REPO_TAG}
+-  GIT_SHALLOW ON
+-)
+-FetchContent_MakeAvailable(repo-common repo-core repo-backend)
++find_package(Threads REQUIRED)     # TritonCommon links Threads::Threads
++find_package(CUDAToolkit REQUIRED) # TritonBackend links CUDA::cudart
++find_package(TritonCore REQUIRED)
++find_package(TritonBackend REQUIRED)
+ 
+ # 
+ # Traccc dependencies
+@@ -103,12 +112,41 @@
+ find_package(covfie REQUIRED)
+ find_package(traccc REQUIRED)
+ 
+-# Work around an upstream ACTS packaging bug. 
++# Work around an upstream ACTS packaging bug: the exported targets advertise an
++# eigen3 directory inside the ACTS include tree that is not actually installed.
++# In the image that directory happens to exist; in the ATLAS release it does not,
++# so CMake refuses at generate time. Point every offending entry at the real
++# Eigen instead of assuming a fixed location.
++find_path(REAL_EIGEN3_INCLUDE_DIR signature_of_eigen3_matrix_library
++          PATH_SUFFIXES eigen3)
++if(NOT REAL_EIGEN3_INCLUDE_DIR)
++  message(FATAL_ERROR "Eigen3 not found; cannot repair the ACTS include paths")
++endif()
++
+ if(TARGET Eigen3::Eigen)
+   set_target_properties(Eigen3::Eigen PROPERTIES
+-    INTERFACE_INCLUDE_DIRECTORIES "${traccc_INCLUDE_DIR}/eigen3")
++    INTERFACE_INCLUDE_DIRECTORIES "${REAL_EIGEN3_INCLUDE_DIR}")
+ endif()
+ 
++foreach(_tgt traccc::core traccc::io traccc::device_common traccc::cuda
++             traccc::cuda_utils detray::core detray::io)
++  if(TARGET ${_tgt})
++    get_target_property(_inc ${_tgt} INTERFACE_INCLUDE_DIRECTORIES)
++    if(_inc)
++      set(_fixed "")
++      foreach(_dir ${_inc})
++        if(_dir MATCHES "eigen3$" AND NOT EXISTS "${_dir}")
++          list(APPEND _fixed "${REAL_EIGEN3_INCLUDE_DIR}")
++        else()
++          list(APPEND _fixed "${_dir}")
++        endif()
++      endforeach()
++      set_target_properties(${_tgt} PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${_fixed}")
++    endif()
++  endif()
++endforeach()
++
+ #
+ # The backend must be built into a shared library. Use an ldscript to
+ # hide all symbols except for the TRITONBACKEND API.
+@@ -149,20 +187,18 @@
+ target_link_libraries(
+   triton-traccc-backend
+   PRIVATE
+-    triton-core-serverapi   # from repo-core
+-    triton-core-backendapi  # from repo-core
+-    triton-core-serverstub  # from repo-core
+-    triton-backend-utils    # from repo-backend
++    TritonCore::triton-core-serverapi   # from repo-core
++    TritonCore::triton-core-backendapi  # from repo-core
++    TritonCore::triton-core-serverstub  # from repo-core
++    TritonBackend::triton-backend-utils    # from repo-backend
+     # traccc deps
+     vecmem::core 
+     vecmem::cuda 
+-    traccc::io 
+-    traccc::performance
++    traccc::io
+     traccc::core 
+     traccc::device_common
+     traccc::cuda
+     traccc::cuda_utils
+-    traccc::options
+     detray::io
+     rt          # shm_open, for the detray-in-shared-memory path
+ )
+--- a/standalone/src/TracccGpuStandalone.hpp
++++ b/standalone/src/TracccGpuStandalone.hpp
+@@ -73,7 +73,6 @@
+ #include "traccc/io/read_detector_description.hpp"
+ 
+ // algorithm options
+-#include "traccc/options/detector.hpp"
+ 
+ // Set the CUDA device to use, and hand the ID back for stream construction.
+ static int setCudaDevice(int deviceID)
+@@ -256,7 +255,19 @@
+ 
+     // program configuration 
+     /// detector options
+-    traccc::opts::detector m_detector_opts;
++    /* The five geometry file paths.
++     *
++     * These were a traccc::opts::detector, a command-line-options helper that
++     * only ever carried these strings. The ATLAS release ships traccc without
++     * its options component, and nothing here needs the option parsing, so the
++     * strings stand on their own. */
++    struct {
++        std::string detector_file;
++        std::string digitization_file;
++        std::string grid_file;
++        std::string material_file;
++        std::string conditions_file;
++    } m_detector_opts;
+     /// Configuration for clustering
+     traccc::clustering_config m_clustering_config;
+     /// Configuration for the seed finding

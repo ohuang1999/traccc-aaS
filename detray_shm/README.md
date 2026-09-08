@@ -11,16 +11,20 @@ without parsing anything. No serialization step exists anywhere — the detector
 allocated through a memory resource that hands out shared memory, so it is in
 shared memory the moment construction finishes.
 
-Measured on lxplus901 (Tesla T4), 2026-09-01:
-
 | | JSON path | shared region |
 |---|---|---|
-| model load (`loading` → `successfully loaded`) | 33.3 s | **13.5 s** |
+| model load, in the image (lxplus901) | 33.3 s | **13.5 s** |
+| model load, on the ATLAS release (lxplus902) | 29.1 s | **13.2 s** |
 | geometry size | 0.80 GiB of JSON | **246 MB** in RAM |
 
-The producer here stands in for Athena, which will eventually build the detector
-in shared memory itself — that is the next step, and it needs the image's traccc
-stack brought into version lockstep with Athena's first.
+Track counts match the JSON path, verified with the Athena client.
+
+**Two ways to build this, and `release/` is the one to use.** The scripts here
+build against the `traccc-aas.sif` image; those in `release/` build against an
+ATLAS ACTS release, which ships `tritonserver` *and* traccc/detray/vecmem
+together. Building there puts the server on exactly the stack Athena uses, so the
+region's version gates pass by construction instead of by keeping two stacks in
+step — and Athena itself can then be the producer. See `release/README.md`.
 
 ## How it works
 
@@ -30,9 +34,9 @@ stack brought into version lockstep with Athena's first.
       |                                       |
     shm_memory_resource (a bump allocator)  validate the header:
       |                                       magic · ready · format
-    vecmem::contiguous_memory_resource        base address · detray + vecmem
+      |                                       base address · detray + vecmem
       |                                       versions · view size
-    read_detector(det, cmr, json...)          (any mismatch REFUSES the load)
+    read_detector(det, shm_mr, json...)       (any mismatch REFUSES the load)
       |                                       |
     write header: counts, versions, view    memcpy the view out of the header
       |                                       |
@@ -133,10 +137,6 @@ port is still held rather than failing after a 35-second model load.
   `shm_memory_resource` straight to `read_detector` — a bump allocator is
   contiguous by construction, so the wrapper buys nothing and hides the number
   worth reporting.
-- **No inference has been run.** The detector is known to *load*, not known to be
-  *correct*. Run a client against both paths and compare track counts against a
-  noise floor, never for equality — traccc is nondeterministic (1469/1483/1494
-  over three identical runs).
 - **`map_region_shared()` is untested.** It maps once per process so
   `instance_group { count: N }` works, but has only run with `count: 1`.
 - **The mapping is never released.** Fine while the region outlives the server,
@@ -146,6 +146,8 @@ port is still held rather than failing after a 35-second model load.
 - **`read_detector_description` and the 58,700-entry identifier map** are
   separate payloads and still come from JSON. Sharing the detector does not share
   them; that is the remaining 13.5 s.
-- **Version lockstep.** The image carries detray 0.101.0 / vecmem 1.21.0;
-  Athena's ACTS nightly carries 0.111.0 / 1.25.0. The gates will correctly refuse
-  across that gap — closing it is D4's problem.
+- **Version lockstep — only for the image path.** The image and Athena's release
+  are separately built stacks that must be kept in step, and they have already
+  diverged (vecmem 1.25 vs 1.27 changed `jagged_vector_view`'s layout). The gates
+  refuse across that gap, correctly. `release/` removes the problem rather than
+  managing it.
