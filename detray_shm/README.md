@@ -115,23 +115,27 @@ The line only this path prints:
     Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
 
-Then send it work. The client is a third piece — an Athena build carrying the
-traccc Triton tool, which is not in this repo either:
+Then send it work. The client — an Athena job that converts RDOs to cells, calls
+the server and writes tracks — is already in the release as `TracccTritonClient`,
+so nothing extra needs building for it:
 
-    https://gitlab.cern.ch/mcochran/athena   branch add-traccc-triton-hits-to-tracks
+    TracccTritonClient.TracccTritonClientConfig.TritonTracccTrackMakerCfg
 
-built the same way but filtered to `InnerDetector/InDetGNNTracking`, and run as an
-ordinary reconstruction job pointed at the server:
+pointed at the server through `flags.Tracking.Traccc.Triton.model` and
+`.url`. Run it as an ordinary reconstruction job over an ITk RDO.
 
-    Reco_tf.py --CA --inputRDOFile <RDO> --outputAODFile AOD.pool.root \
-      --preExec 'flags.Tracking.GNN.Triton.model = "traccc-gpu"; flags.Tracking.GNN.Triton.url = "localhost";' \
-      --steering doRAWtoALL \
-      --postInclude "InDetGNNTracking.InDetGNNTrackingConfig.TracccTrackMakerCfg,ActsConfig.ActsPostIncludes.ACTSClusterPostInclude" \
-      --maxEvents 5
+Note that `TritonTracccTrackMakerCfg` configures
+`JSONDeviceDetectorDescriptionProviderSvc` itself — the same service the producer
+patch changes. So the client job also builds a detector, and setting
+`SharedMemoryRegion` there is what makes a job produce the region.
 
-`TracccTrackMaker ... Number of tracks found:` in the log is the number to compare
-between the two geometry sources. Expect agreement, not equality — traccc is
-nondeterministic.
+`Number of tracks found:` in the log is the number to compare between the two
+geometry sources. Expect agreement, not equality — traccc is nondeterministic.
+
+The tracks measured above were produced with an older client (release 25.0.45
+plus a development branch, which is what predates `TracccTritonClient` being
+merged). The in-release client is the right one to use now, but has not been run
+against this server here.
 
 ## What the release needed repairing
 
