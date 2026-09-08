@@ -90,9 +90,16 @@ mismatch:
     cmake ../athena/Projects/WorkDir && make -j$(nproc)
     source ./*/setup.sh
 
-The change adds one property to `JSONDeviceDetectorDescriptionProviderSvc`. Set it
-wherever that service is configured and the detector is built into the region
-instead of ordinary host memory:
+The change adds one property to `JSONDeviceDetectorDescriptionProviderSvc`. The
+package ships a job that sets it and does nothing else:
+
+    athena.py ../athena/Tracking/Acts/ActsGPUGeometry/share/ProduceSharedMemoryDetector.py
+
+It logs the region it wrote and the counts it published, and the region
+deliberately outlives the job — which is the point.
+
+Set the same property wherever that service is configured, in a full
+reconstruction included, and that job produces the region instead:
 
     JSONDeviceDetectorDescriptionProviderSvcCfg(
         flags,
@@ -100,9 +107,7 @@ instead of ordinary host memory:
         SharedMemoryRegionGB=2,      # tmpfs commits only what is written
         ...)
 
-Leave it unset and Athena behaves exactly as before. When it is set the job logs
-the region it wrote and the counts it published, and the region deliberately
-outlives the job.
+Leave it unset and Athena behaves exactly as before.
 
 ### 3. Adopting it, and running tracks
 
