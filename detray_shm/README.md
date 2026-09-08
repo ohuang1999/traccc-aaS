@@ -18,6 +18,10 @@ finishes.
 
 Measured on lxplus902, Tesla T4, 2026-09-08. Track counts match the JSON path.
 
+The producer in those measurements was a zero-event Athena job that does nothing
+but initialize the service. Setting the property inside a full reconstruction job
+is the same one-line change, but has not been run.
+
 ## The two halves
 
 **The producer is Athena.** `JSONDeviceDetectorDescriptionProviderSvc`
@@ -52,24 +56,31 @@ region written by one and read by the other would resolve pointers at the wrong
 offsets — silently. The header's version gates catch it, correctly. But with two
 stacks the chase never ends; with one, the gates pass by construction.
 
-## Running it
+## Running it end to end
 
-One GPU node for everything: `/tmp` is node-local and the backend is
-`-march=native`.
+Three pieces, all on one GPU node: this server, an Athena job that produces the
+region, and an Athena client that sends hits. `/tmp` is node-local and the backend
+is `-march=native`, so nothing here travels between machines.
 
-    ./prepare_geometry.sh    # once per node
-    ./build.sh               # backend, against the release
-    ./run_server.sh          # JSON baseline — confirm READY first
+### 1. The server
 
-### Producing the region from Athena
+    ./prepare_geometry.sh    # once per node; needs the eftracking e-group
+    ./build.sh               # the backend, against the release
+    ./run_server.sh          # JSON path — confirm READY before going further
 
-The producer side is an Athena change and lives in Athena, not here. Until it is
-merged, it is on a branch:
+Getting the baseline working first matters: if it fails, the problem is the build,
+not the sharing.
 
-    https://gitlab.cern.ch/tihuang/athena  branch detray-shm-producer
+### 2. Athena, producing the region
 
-Build just that package on top of the same release — Athena and this server must
-run the same one, or the region's ABI gates will refuse it:
+The producer side is an Athena change and lives in Athena. Until it is merged it
+is on a branch:
+
+    https://gitlab.cern.ch/tihuang/athena   branch detray-shm-producer
+
+Build that one package against the **same release** this server uses — the
+region's ABI gates compare what each side was compiled against, and refuse a
+mismatch:
 
     asetup main--ACTS,Athena,2026-09-07T2100
     lsetup git
@@ -79,23 +90,48 @@ run the same one, or the region's ABI gates will refuse it:
     cmake ../athena/Projects/WorkDir && make -j$(nproc)
     source ./*/setup.sh
 
-Then run any job that configures `JSONDeviceDetectorDescriptionProviderSvc` with
-`SharedMemoryRegion` set. The package ships a minimal one — a zero-event job that
-does nothing but build the detector into the region:
+The change adds one property to `JSONDeviceDetectorDescriptionProviderSvc`. Set it
+wherever that service is configured and the detector is built into the region
+instead of ordinary host memory:
 
-    athena.py ../athena/Tracking/Acts/ActsGPUGeometry/test/ActsDeviceSharedMemoryTest.py
+    JSONDeviceDetectorDescriptionProviderSvcCfg(
+        flags,
+        SharedMemoryRegion="/athena_itk_detector",
+        SharedMemoryRegionGB=2,      # tmpfs commits only what is written
+        ...)
 
-It prints the region it wrote and the counts it published. The region deliberately
+Leave it unset and Athena behaves exactly as before. When it is set the job logs
+the region it wrote and the counts it published, and the region deliberately
 outlives the job.
 
-### Adopting it
+### 3. Adopting it, and running tracks
+
+Restart the server pointed at the region:
 
     SHM=/athena_itk_detector ./run_server.sh
 
-Look for the line only this path prints:
+The line only this path prints:
 
     Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
+
+Then send it work. The client is a third piece — an Athena build carrying the
+traccc Triton tool, which is not in this repo either:
+
+    https://gitlab.cern.ch/mcochran/athena   branch add-traccc-triton-hits-to-tracks
+
+built the same way but filtered to `InnerDetector/InDetGNNTracking`, and run as an
+ordinary reconstruction job pointed at the server:
+
+    Reco_tf.py --CA --inputRDOFile <RDO> --outputAODFile AOD.pool.root \
+      --preExec 'flags.Tracking.GNN.Triton.model = "traccc-gpu"; flags.Tracking.GNN.Triton.url = "localhost";' \
+      --steering doRAWtoALL \
+      --postInclude "InDetGNNTracking.InDetGNNTrackingConfig.TracccTrackMakerCfg,ActsConfig.ActsPostIncludes.ACTSClusterPostInclude" \
+      --maxEvents 5
+
+`TracccTrackMaker ... Number of tracks found:` in the log is the number to compare
+between the two geometry sources. Expect agreement, not equality — traccc is
+nondeterministic.
 
 ## What the release needed repairing
 
