@@ -64,6 +64,9 @@ is `-march=native`, so nothing here travels between machines.
 
 ### 1. The server
 
+    git clone -b detray-shm https://github.com/ohuang1999/traccc-aaS.git
+    cd traccc-aaS/detray_shm
+
     ./prepare_geometry.sh    # once per node; needs the eftracking e-group
     ./build.sh               # the backend, against the release
     ./run_server.sh          # JSON path — confirm READY before going further
