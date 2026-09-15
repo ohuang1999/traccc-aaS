@@ -43,7 +43,7 @@ echo
 if [ -f "${BACKEND_BUILD}/libtriton_traccc.so" ]; then
     ls -lh "${BACKEND_BUILD}/libtriton_traccc.so"
     echo "unresolved symbols: $(ldd -r "${BACKEND_BUILD}/libtriton_traccc.so" 2>&1 | grep -c 'not found')"
-    echo "OK -- now: ${HERE}/run_server_release.sh"
+    echo "OK -- now: ${HERE}/run_server.sh"
 else
     echo "FAILED: no libtriton_traccc.so in ${BACKEND_BUILD}"; exit 1
 fi
