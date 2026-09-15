@@ -59,8 +59,18 @@ stacks the chase never ends; with one, the gates pass by construction.
 ## Running it end to end
 
 Three pieces, all on one GPU node: this server, an Athena job that produces the
-region, and an Athena client that sends hits. `/tmp` is node-local and the backend
-is `-march=native`, so nothing here travels between machines.
+region, and an Athena client that sends hits. `/tmp` and `/dev/shm` are both
+per-machine and the backend is `-march=native`, so nothing here travels between
+machines — use the node's own name, not `lxplus-gpu`, which hands out a different
+one each time.
+
+Three terminals, one per piece:
+
+| terminal | runs | step |
+|---|---|---|
+| **1** | the server | 1, and again in 3 |
+| **2** | Athena: build the package, produce the region | 2 |
+| **3** | Athena: the client sending hits | 3 |
 
 ### 1. The server
 
@@ -85,11 +95,9 @@ Build that one package against the **same release** this server uses — the
 region's ABI gates compare what each side was compiled against, and refuse a
 mismatch:
 
-In a **second terminal on the same node** — `/dev/shm` is per-machine, so the
-producer has to run where the server runs. Use the node's own name rather than
-`lxplus-gpu`, which hands out a different node each time:
+**Terminal 2**, on the same node as the server:
 
-    ssh lxplus9NN                      # the node the server is on
+    ssh lxplus9NN                      # the node terminal 1 is on
     mkdir -p /tmp/$USER/athena && cd /tmp/$USER/athena
 
     export ATLAS_LOCAL_ROOT_BASE=/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
@@ -116,10 +124,9 @@ It logs the region it wrote and the counts it published, and the region
 deliberately outlives the job — which is the point. Run it once; it is not
 repeated per server restart.
 
-Then go back to the server's terminal, or open a **third** one. Do not restart
-the server from this shell: it has already had `asetup` and the WorkDir
-`setup.sh`, and `run_server.sh` runs `asetup` again, which does not always
-survive being done twice in one shell.
+Do not restart the server from this terminal: it has already had `asetup` and the
+WorkDir `setup.sh`, and `run_server.sh` runs `asetup` again, which does not
+reliably survive being done twice in one shell. Go back to terminal 1.
 
 Set the same property wherever that service is configured, in a full
 reconstruction included, and that job produces the region instead:
@@ -134,10 +141,9 @@ Leave it unset and Athena behaves exactly as before.
 
 ### 3. Adopting it, and running tracks
 
-Restart the server pointed at the region, from a clean shell in this folder:
+Back in **terminal 1**, stop the server (Ctrl-C) and restart it pointed at the
+region:
 
-    ssh lxplus9NN
-    cd <where you cloned>/traccc-aaS/detray_shm
     SHM=/athena_itk_detector ./run_server.sh
 
 The line only this path prints:
@@ -145,8 +151,8 @@ The line only this path prints:
     Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
 
-Then send it work. The client is already in the release as `TracccTritonClient`,
-so nothing extra needs building:
+Then send it work, from **terminal 3**. The client is already in the release as
+`TracccTritonClient`, so nothing extra needs building:
 
     Reco_tf.py --CA \
       --inputRDOFile <an ITk RDO> --outputAODFile AOD.pool.root \
