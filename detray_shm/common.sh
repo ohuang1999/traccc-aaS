@@ -25,8 +25,11 @@ fi
 # with `ls /cvmfs/atlas-nightlies.cern.ch/repo/sw/main--ACTS_Athena_*` -- but the
 # producer and this server must use the SAME one, or the ABI gates refuse.
 RELEASE="${RELEASE:-main--ACTS,Athena,2026-09-07T2100}"
-# GEO must hold detray_detector_{geometry,material_maps,surface_grids}.json,
-# ITk_bfield.cvf, ITk_digitization_config.json and athenaIdentifierToDetrayMap.txt.
+# GEO must hold detray_detector_geometry.json, ITk_bfield.cvf,
+# ITk_digitization_config.json and athenaIdentifierToDetrayMap.txt -- the
+# detector description, conditions and field, which are separate payloads from
+# the detector and still come from disk. The material maps and surface grids are
+# no longer needed: they fed read_detector, which the region replaces.
 # prepare_geometry.sh stages them from GEO_SRC onto node-local disk.
 GEO_SRC="${GEO_SRC:-/eos/project/a/atlas-eftracking/GPU/ITk_data/FinalReport}"
 GEO="${GEO:-/tmp/${USER}/itk-geo}"
@@ -38,8 +41,8 @@ MODELS="${MODELS:-/tmp/${USER}/rel_models}"
 
 # The region is produced by Athena, not by anything here: a
 # JSONDeviceDetectorDescriptionProviderSvc with its SharedMemoryRegion property
-# set. SHM names the region to adopt; empty means parse JSON instead.
-SHM="${SHM:-}"
+# set. The backend has no JSON fallback, so this must name an existing region.
+SHM="${SHM:-/athena_itk_detector}"
 
 # The release's tritonserver is built WITHOUT HTTP or metrics -- it accepts only
 # gRPC options. That also makes the lxplus port-8000 problem irrelevant here.

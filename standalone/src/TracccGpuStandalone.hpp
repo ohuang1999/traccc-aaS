@@ -60,7 +60,6 @@
 #include "traccc/io/read_cells.hpp"
 #include "traccc/io/utils.hpp"
 #include "traccc/io/csv/make_cell_reader.hpp"
-#include "traccc/io/read_detector.hpp"
 #include "traccc/geometry/detector_buffer.hpp"
 
 // Adopting a detray detector from shared memory instead of parsing JSON.
@@ -288,7 +287,6 @@ private:
     /// Detector conditions description buffer
     traccc::detector_conditions_description::buffer m_device_det_cond;
     /// Host detector
-    traccc::host_detector m_detector;
     traccc::detector_buffer m_device_detector;
 
     /// Sub-algorithms used by this full-chain algorithm
@@ -406,10 +404,13 @@ public:
 void TracccGpuStandalone::initialize()
 {
     // HACK: hard code location of detector and digitization file
+    /* Only the detector comes from shared memory. The description, digitization
+     * and conditions are separate payloads and are still read here -- which is
+     * why the geometry JSON is still needed, and why this is not the whole of
+     * the startup cost. The material maps and surface grids are no longer read:
+     * they fed read_detector, which the region replaces. */
     m_detector_opts.detector_file = m_geoDir + "/detray_detector_geometry.json";
     m_detector_opts.digitization_file = m_geoDir + "/ITk_digitization_config.json";
-    m_detector_opts.grid_file = m_geoDir + "/detray_detector_surface_grids.json";
-    m_detector_opts.material_file = m_geoDir + "/detray_detector_material_maps.json";
     // ITk has no separate conditions file. The conditions reader only picks up
     // the optional "shift" key, which this file does not carry, so every module
     // ends up with a zero measurement translation.
@@ -460,19 +461,21 @@ void TracccGpuStandalone::initialize()
         m_geomIdMap[m_det_cond_storage.geometry_id()[i].value()] = i;
     }
 
-    // Two geometry sources. Setting TRACCC_DETRAY_SHM adopts an already-built
-    // detector from a shared-memory region; otherwise the original JSON path
-    // runs unchanged. Both are kept so the two can be compared on identical
-    // input -- a result with nothing to compare against proves nothing.
-    if (const char* shm_name = std::getenv("TRACCC_DETRAY_SHM")) {
-        adopt_detector_from_shm(shm_name);
-    } else {
-        traccc::io::read_detector(
-            m_detector, m_host_mr, m_detector_opts.detector_file,
-            m_detector_opts.material_file, m_detector_opts.grid_file);
-        m_device_detector =
-            traccc::buffer_from_host_detector(m_detector, *m_device_mr, m_copy);
+    /* The detector comes from a shared-memory region, always.
+     *
+     * Athena builds it there -- a JSONDeviceDetectorDescriptionProviderSvc with
+     * its SharedMemoryRegion property set -- and this adopts it. There is no
+     * JSON path left to fall back to: parsing the geometry again here produced a
+     * second copy of something another process had already built, which is the
+     * cost this exists to remove. */
+    const char* shm_name = std::getenv("TRACCC_DETRAY_SHM");
+    if (shm_name == nullptr || *shm_name == '\0') {
+        throw std::runtime_error(
+            "TRACCC_DETRAY_SHM is not set. The detector is adopted from a "
+            "shared-memory region produced by Athena; set it to that region's "
+            "name, e.g. /athena_itk_detector.");
     }
+    adopt_detector_from_shm(shm_name);
     m_stream.synchronize();
 
     return;

@@ -3,10 +3,10 @@
 # build.sh. No container anywhere: the release provides the server, the
 # libraries and the compiler.
 #
-# Set SHM to adopt the detector from a /dev/shm region instead of parsing JSON.
-# The region is produced by Athena: a JSONDeviceDetectorDescriptionProviderSvc
-# with SharedMemoryRegion set (see the README). It must come from a job running
-# this SAME release, or the ABI gates will refuse it.
+# The detector is adopted from a /dev/shm region; there is no JSON fallback. The
+# region is produced by Athena -- a JSONDeviceDetectorDescriptionProviderSvc with
+# SharedMemoryRegion set, see the README -- and must come from a job running this
+# SAME release, or the ABI gates will refuse it. SHM names which region.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/common.sh"
@@ -29,13 +29,13 @@ cp -f "${BACKEND_BUILD}/libtriton_traccc.so" "${MODELS}/traccc-gpu/"
 
 rb_asetup
 
-if [ -n "${SHM}" ]; then
-    echo "geometry source: SHARED REGION ${SHM}"
-    ls -lh "/dev/shm${SHM}" || { echo "FATAL: no region at /dev/shm${SHM}"; exit 1; }
-    export TRACCC_DETRAY_SHM="${SHM}"
-else
-    echo "geometry source: JSON in ${GEO}  (baseline)"
-fi
+[ -e "/dev/shm${SHM}" ] || {
+    echo "FATAL: no region at /dev/shm${SHM}." >&2
+    echo "       Produce it from Athena first -- see the README. There is no" >&2
+    echo "       JSON fallback: the detector only comes from the region." >&2
+    exit 1; }
+echo "detector : /dev/shm${SHM}  ($(du -h "/dev/shm${SHM}" | cut -f1) resident)"
+export TRACCC_DETRAY_SHM="${SHM}"
 
 echo "release : ${AtlasVersion} ${BINARY_TAG}"
 echo "models  : ${MODELS}"

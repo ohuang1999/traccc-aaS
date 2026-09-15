@@ -11,12 +11,16 @@ step exists anywhere. The detector is allocated through a memory resource that
 hands out shared memory, so it is in shared memory the moment construction
 finishes.
 
-| | JSON | shared region |
+| | before | now |
 |---|---|---|
 | model load | 29.1 s | **13.0 s** |
 | geometry | 0.80 GiB of JSON | **246 MB** resident |
 
-Measured on lxplus902, Tesla T4, 2026-09-08. Track counts match the JSON path.
+The "before" column is the JSON path, which this backend no longer has — the
+numbers are kept because they are what the change bought.
+
+Measured on lxplus902, Tesla T4, 2026-09-08, while both paths still existed.
+Track counts matched.
 
 The producer in those measurements was a zero-event Athena job that does nothing
 but initialize the service. Setting the property inside a full reconstruction job
@@ -30,9 +34,11 @@ set, `read_detector` allocates through the region instead of ordinary host
 memory, and the service writes a header and publishes it. That change lives in
 Athena, not in this repo.
 
-**The consumer is the backend in this repo.** `initialize()` branches on
-`TRACCC_DETRAY_SHM`: set, it validates the header and hands the region's view
-straight to the GPU; unset, the original JSON path runs unchanged.
+**The consumer is the backend in this repo.** `initialize()` validates the
+region's header and hands its view straight to the GPU. There is no JSON path
+left: parsing the geometry here produced a second copy of something Athena had
+already built, which is the cost this exists to remove. Without a region the
+backend refuses to start, and says so.
 
     standalone/src/shm_region.{hpp,cpp}       region layout and mapping
     standalone/src/shm_memory_resource.hpp    ~30 lines: a bump allocator that
@@ -79,10 +85,10 @@ Three terminals, one per piece:
 
     ./prepare_geometry.sh    # once per node; needs the eftracking e-group
     ./build.sh               # the backend, against the release
-    ./run_server.sh          # JSON path — confirm READY before going further
 
-Getting the baseline working first matters: if it fails, the problem is the build,
-not the sharing.
+The server cannot start yet — it needs a region, and nothing has produced one.
+Build it now so that if something is wrong, you find out here rather than three
+steps later.
 
 ### 2. Athena, producing the region
 
@@ -141,15 +147,16 @@ Leave it unset and Athena behaves exactly as before.
 
 ### 3. Adopting it, and running tracks
 
-Back in **terminal 1**, stop the server (Ctrl-C) and restart it pointed at the
-region:
+Back in **terminal 1**, start the server against the region:
 
-    SHM=/athena_itk_detector ./run_server.sh
+    ./run_server.sh
 
-The line only this path prints:
+`SHM` defaults to `/athena_itk_detector`; set it if you named the region
+something else. The server reports the region and its resident size, then:
 
     Adopted detector from /athena_itk_detector: 379 volumes, 60911 surfaces,
     61290 transforms -- no JSON parsed
+    traccc-gpu | 1 | READY
 
 Then send it work, from **terminal 3**. The client is already in the release as
 `TracccTritonClient`, so nothing extra needs building:
@@ -167,8 +174,10 @@ defaults — `traccc-gpu` on `localhost:8001` — already match what
 `run_server.sh` starts, so no `--preExec` is needed when both are on one node.
 Elsewhere, override `flags.Tracking.Traccc.Triton.url` and `.port`.
 
-`Number of tracks found:` in the log is the number to compare between the two
-geometry sources. Expect agreement, not equality — traccc is nondeterministic.
+`Number of tracks found:` in the log is the number to watch. There is no JSON
+path to compare against any more, so the reference is the recorded one: 2620,
+2340, 2461, 2825, 2436 over the first five events of the ttbar sample. Expect
+agreement, not equality — traccc is nondeterministic.
 
 ### Which node runs what
 
@@ -226,6 +235,8 @@ release's `tritonserver` is built without HTTP or metrics, accepting only gRPC.
   path is polymorphic over `detector_type_list`.
 - **Lifecycle is unowned.** The mapping is never released, and nothing handles a
   producer restart, an IOV change, or cleanup after a crash.
-- **The detector is not the whole geometry.** `read_detector_description` and the
-  58,700-entry identifier map are separate payloads and still come from JSON.
-  That is most of the remaining 13 s.
+- **The detector is not the whole geometry.** `read_detector_description`, the
+  conditions, the magnetic field and the 58,700-entry identifier map are separate
+  payloads and still come from disk. That is most of the remaining 13 s, and it
+  is why `prepare_geometry.sh` is still needed. Only the material maps and
+  surface grids became unnecessary — they fed `read_detector`.

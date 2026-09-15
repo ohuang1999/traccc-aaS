@@ -1,14 +1,10 @@
 --- a/backend/traccc-gpu/CMakeLists.txt
 +++ b/backend/traccc-gpu/CMakeLists.txt
-@@ -75,27 +75,36 @@
+@@ -75,27 +75,32 @@
  # FetchContent requires us to include the transitive closure of all
  # repos that we depend on so that we can override the tags.
  #
 -include(FetchContent)
-+# Triton's API packages come from the ATLAS release rather than GitHub. The
-+# release ships TritonBackend/TritonCore/TritonCommon already built with the same
-+# compiler as everything else here, so there is nothing to download and no chance
-+# of a toolchain mismatch.
 +# Triton's API packages come from the ATLAS release rather than GitHub.
 +#
 +# TritonCommon needs handling: its Config.cmake references
@@ -57,7 +53,7 @@
  
  # 
  # Traccc dependencies
-@@ -103,12 +112,41 @@
+@@ -103,12 +108,41 @@
  find_package(covfie REQUIRED)
  find_package(traccc REQUIRED)
  
@@ -101,7 +97,7 @@
  #
  # The backend must be built into a shared library. Use an ldscript to
  # hide all symbols except for the TRITONBACKEND API.
-@@ -149,20 +187,18 @@
+@@ -149,20 +183,18 @@
  target_link_libraries(
    triton-traccc-backend
    PRIVATE
@@ -129,7 +125,7 @@
  )
 --- a/standalone/src/TracccGpuStandalone.hpp
 +++ b/standalone/src/TracccGpuStandalone.hpp
-@@ -73,7 +73,6 @@
+@@ -72,7 +72,6 @@
  #include "traccc/io/read_detector_description.hpp"
  
  // algorithm options
@@ -137,12 +133,12 @@
  
  // Set the CUDA device to use, and hand the ID back for stream construction.
  static int setCudaDevice(int deviceID)
-@@ -256,7 +255,19 @@
+@@ -255,7 +254,17 @@
  
      // program configuration 
      /// detector options
 -    traccc::opts::detector m_detector_opts;
-+    /* The five geometry file paths.
++    /* The geometry file paths.
 +     *
 +     * These were a traccc::opts::detector, a command-line-options helper that
 +     * only ever carried these strings. The ATLAS release ships traccc without
@@ -151,8 +147,6 @@
 +    struct {
 +        std::string detector_file;
 +        std::string digitization_file;
-+        std::string grid_file;
-+        std::string material_file;
 +        std::string conditions_file;
 +    } m_detector_opts;
      /// Configuration for clustering
