@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start tritonserver FROM THE ATLAS RELEASE, loading the backend built by
-# build_release.sh. No container anywhere: the release provides the server, the
+# build.sh. No container anywhere: the release provides the server, the
 # libraries and the compiler.
 #
 # Set SHM to adopt the detector from a /dev/shm region instead of parsing JSON.
@@ -13,7 +13,7 @@ source "${HERE}/common.sh"
 rb_require_geo
 
 [ -f "${BACKEND_BUILD}/libtriton_traccc.so" ] || {
-    echo "FATAL: backend not built. Run ${HERE}/build_release.sh first."; exit 1; }
+    echo "FATAL: backend not built. Run ${HERE}/build.sh first."; exit 1; }
 
 # Triton binds its port only after loading the model, so a port held elsewhere
 # costs a full model load before it aborts. Check first.
