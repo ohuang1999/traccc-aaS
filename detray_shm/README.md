@@ -85,13 +85,27 @@ Build that one package against the **same release** this server uses — the
 region's ABI gates compare what each side was compiled against, and refuse a
 mismatch:
 
+In a **second terminal on the same node** — `/dev/shm` is per-machine, so the
+producer has to run where the server runs. Use the node's own name rather than
+`lxplus-gpu`, which hands out a different node each time:
+
+    ssh lxplus9NN                      # the node the server is on
+    mkdir -p /tmp/$USER/athena && cd /tmp/$USER/athena
+
+    export ATLAS_LOCAL_ROOT_BASE=/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+    source $ATLAS_LOCAL_ROOT_BASE/user/atlasLocalSetup.sh
     asetup main--ACTS,Athena,2026-09-07T2100
     lsetup git
+
     git atlas init-workdir ssh://git@gitlab.cern.ch:7999/tihuang/athena.git
     cd athena && git checkout detray-shm-producer && git atlas addpkg ActsGPUGeometry
     cd .. && mkdir build && cd build
     cmake ../athena/Projects/WorkDir && make -j$(nproc)
     source ./*/setup.sh
+
+`atlasLocalSetup.sh` is what defines `asetup`; without sourcing it first you get
+`asetup: command not found`. Build on `/tmp`, not `/eos` — it is local disk, and
+this is a 640 MB clone.
 
 The change adds one property to `JSONDeviceDetectorDescriptionProviderSvc`. The
 package ships a job that sets it and does nothing else:
@@ -99,7 +113,13 @@ package ships a job that sets it and does nothing else:
     athena.py ../athena/Tracking/Acts/ActsGPUGeometry/share/ProduceSharedMemoryDetector.py
 
 It logs the region it wrote and the counts it published, and the region
-deliberately outlives the job — which is the point.
+deliberately outlives the job — which is the point. Run it once; it is not
+repeated per server restart.
+
+Then go back to the server's terminal, or open a **third** one. Do not restart
+the server from this shell: it has already had `asetup` and the WorkDir
+`setup.sh`, and `run_server.sh` runs `asetup` again, which does not always
+survive being done twice in one shell.
 
 Set the same property wherever that service is configured, in a full
 reconstruction included, and that job produces the region instead:
@@ -114,8 +134,10 @@ Leave it unset and Athena behaves exactly as before.
 
 ### 3. Adopting it, and running tracks
 
-Restart the server pointed at the region:
+Restart the server pointed at the region, from a clean shell in this folder:
 
+    ssh lxplus9NN
+    cd <where you cloned>/traccc-aaS/detray_shm
     SHM=/athena_itk_detector ./run_server.sh
 
 The line only this path prints:
