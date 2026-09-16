@@ -35,10 +35,15 @@ memory, and the service writes a header and publishes it. That change lives in
 Athena, not in this repo.
 
 **The consumer is the backend in this repo.** `initialize()` validates the
-region's header and hands its view straight to the GPU. There is no JSON path
-left: parsing the geometry here produced a second copy of something Athena had
-already built, which is the cost this exists to remove. Without a region the
-backend refuses to start, and says so.
+region's header and adopts all three payloads — the detector, the design
+description and the conditions — handing their views to the GPU. There is no JSON
+path left: parsing them here produced a second copy of what Athena had already
+built, which is the cost this exists to remove. Without a region the backend
+refuses to start, and says so.
+
+What the server still reads from disk: the magnetic field (`ITk_bfield.cvf`) and
+the identifier map. Neither can be shared as it stands — covfie allocates with
+plain `new` and takes no memory resource, and the map is a `std::unordered_map`.
 
     standalone/src/shm_region.{hpp,cpp}       region layout and mapping
     standalone/src/shm_memory_resource.hpp    ~30 lines: a bump allocator that
@@ -235,8 +240,8 @@ release's `tritonserver` is built without HTTP or metrics, accepting only gRPC.
   path is polymorphic over `detector_type_list`.
 - **Lifecycle is unowned.** The mapping is never released, and nothing handles a
   producer restart, an IOV change, or cleanup after a crash.
-- **The detector is not the whole geometry.** `read_detector_description`, the
-  conditions, the magnetic field and the 58,700-entry identifier map are separate
-  payloads and still come from disk. That is most of the remaining 13 s, and it
-  is why `prepare_geometry.sh` is still needed. Only the material maps and
-  surface grids became unnecessary — they fed `read_detector`.
+- **Two payloads still come from disk.** The magnetic field and the 58,700-entry
+  identifier map. The field cannot be shared without changing covfie, which
+  allocates with plain `new` and accepts no memory resource; the map is a
+  `std::unordered_map`, which would have to be reshaped into something flat. That
+  is why `prepare_geometry.sh` is still needed.

@@ -18,7 +18,7 @@
 namespace detray_shm {
 
 inline constexpr std::uint64_t MAGIC = 0x4431'4445'5452'4159ULL;  // "D1DETRAY"
-inline constexpr std::uint32_t FORMAT_VERSION = 1;
+inline constexpr std::uint32_t FORMAT_VERSION = 2;
 inline constexpr std::size_t HEADER_BYTES = 4096;
 
 /* Fixed virtual address both processes map at.
@@ -54,14 +54,24 @@ struct header {
     std::uint32_t detray_major, detray_minor, detray_patch;
     std::uint32_t vecmem_major, vecmem_minor, vecmem_patch;
     std::uint32_t view_bytes;     // sizeof(const_view_type) as the producer saw it
+    std::uint32_t design_view_bytes;  // sizeof(detector_design_description::view)
+    std::uint32_t cond_view_bytes;    // sizeof(detector_conditions_description::view)
     std::uint32_t ready;          // 0 while writing, 1 when complete
 
     // Cheap structural check — the consumer must reproduce these exactly.
     std::uint64_t n_volumes;
     std::uint64_t n_surfaces;
     std::uint64_t n_transforms;
+    std::uint64_t n_modules;      // entries in the design description
+    std::uint64_t n_conditions;   // entries in the conditions description
 
-    unsigned char view[VIEW_BYTES];
+    /* Three views, one per payload. Each is a small bundle of pointers and
+     * sizes -- the detector's is 976 bytes, the other two 232 each -- pointing
+     * at data that already lives in the payload. VIEW_BYTES is generous for all
+     * three; the producer static_asserts that each really fits. */
+    unsigned char view[VIEW_BYTES];         // the detray detector
+    unsigned char design_view[VIEW_BYTES];  // detector_design_description
+    unsigned char cond_view[VIEW_BYTES];    // detector_conditions_description
 };
 
 static_assert(sizeof(header) <= HEADER_BYTES, "header outgrew its slot");

@@ -69,10 +69,8 @@
 #include <vecmem/version.hpp>
 #include <cstdlib>
 #include <cstring>
-#include "traccc/io/read_detector_description.hpp"
 
 // algorithm options
-#include "traccc/options/detector.hpp"
 
 // Set the CUDA device to use, and hand the ID back for stream construction.
 static int setCudaDevice(int deviceID)
@@ -255,7 +253,6 @@ private:
 
     // program configuration 
     /// detector options
-    traccc::opts::detector m_detector_opts;
     /// Configuration for clustering
     traccc::clustering_config m_clustering_config;
     /// Configuration for the seed finding
@@ -279,9 +276,7 @@ private:
     traccc::vector3 m_field_vec;
 
     /// Detector design description (module segmentation)
-    traccc::detector_design_description::host m_det_descr_storage;
     /// Detector conditions description (module -> design map, geometry IDs)
-    traccc::detector_conditions_description::host m_det_cond_storage;
     /// Detector design description buffer
     traccc::detector_design_description::buffer m_device_det_descr;
     /// Detector conditions description buffer
@@ -336,8 +331,6 @@ public:
             m_host_field(make_magnetic_field(geoDir + "ITk_bfield.cvf")),
             m_field(traccc::cuda::make_magnetic_field(m_host_field)),
             m_field_vec({0.f, 0.f, m_finder_config.bFieldInZ}),
-            m_det_descr_storage(m_host_mr),
-            m_det_cond_storage(m_host_mr),
             m_device_det_descr(std::vector<unsigned int>{}, *m_device_mr,
                                &m_host_mr,
                                vecmem::data::buffer_type::resizable),
@@ -403,19 +396,6 @@ public:
 
 void TracccGpuStandalone::initialize()
 {
-    // HACK: hard code location of detector and digitization file
-    /* Only the detector comes from shared memory. The description, digitization
-     * and conditions are separate payloads and are still read here -- which is
-     * why the geometry JSON is still needed, and why this is not the whole of
-     * the startup cost. The material maps and surface grids are no longer read:
-     * they fed read_detector, which the region replaces. */
-    m_detector_opts.detector_file = m_geoDir + "/detray_detector_geometry.json";
-    m_detector_opts.digitization_file = m_geoDir + "/ITk_digitization_config.json";
-    // ITk has no separate conditions file. The conditions reader only picks up
-    // the optional "shift" key, which this file does not carry, so every module
-    // ends up with a zero measurement translation.
-    m_detector_opts.conditions_file = m_detector_opts.digitization_file;
-
     // Load Athena-to-Detray mapping
     std::string athenaTransformsPath = m_geoDir + "/athenaIdentifierToDetrayMap.txt";
     m_athena_to_detray_map = read_athena_to_detray_mapping(athenaTransformsPath);
@@ -426,40 +406,6 @@ void TracccGpuStandalone::initialize()
         m_detray_to_athena_map[detray_id] = athena_id;
     }
 
-    traccc::io::read_detector_description(
-        m_det_descr_storage, m_det_cond_storage, m_detector_opts.detector_file,
-        m_detector_opts.digitization_file, m_detector_opts.conditions_file,
-        traccc::data_format::json);
-
-    // The design description holds jagged bin-edge arrays, so its device buffer
-    // needs a per-element capacity and must be resizable.
-    std::vector<unsigned int> descr_sizes(m_det_descr_storage.size());
-    for (std::size_t i = 0; i < m_det_descr_storage.size(); ++i) {
-        auto this_design = m_det_descr_storage.at(i);
-        descr_sizes[i] = std::max(
-            static_cast<unsigned int>(this_design.bin_edges_x().size()),
-            static_cast<unsigned int>(this_design.bin_edges_y().size()));
-    }
-    m_device_det_descr = traccc::detector_design_description::buffer(
-        descr_sizes, *m_device_mr, &m_host_mr,
-        vecmem::data::buffer_type::resizable);
-    m_copy.setup(m_device_det_descr)->wait();
-    m_copy(vecmem::get_data(m_det_descr_storage), m_device_det_descr)->wait();
-
-    m_device_det_cond = traccc::detector_conditions_description::buffer(
-        static_cast<traccc::detector_conditions_description::buffer::size_type>(
-            m_det_cond_storage.size()),
-        *m_device_mr);
-    m_copy.setup(m_device_det_cond)->wait();
-    m_copy(vecmem::get_data(m_det_cond_storage), m_device_det_cond)->wait();
-    m_stream.synchronize();
-
-    // fill the module (conditions) index to geometry id map
-    m_geomIdMap.clear();
-    m_geomIdMap.reserve(m_det_cond_storage.geometry_id().size());
-    for (unsigned int i = 0; i < m_det_cond_storage.geometry_id().size(); ++i) {
-        m_geomIdMap[m_det_cond_storage.geometry_id()[i].value()] = i;
-    }
 
     /* The detector comes from a shared-memory region, always.
      *
@@ -551,11 +497,71 @@ void TracccGpuStandalone::adopt_detector_from_shm(const std::string& shm_name)
     m_device_detector.set<traccc::itk_detector>(
         detray::get_buffer(view, *m_device_mr, m_copy));
 
+    /* The design description and the conditions come from the same region.
+     *
+     * Both are vecmem EDM containers, so the same trick applies: the producer
+     * built them through a resource backed by the region, and what crosses is a
+     * small view. The design's bin edges are jagged, and that works because
+     * vecmem allocates a jagged view's inner array from the container's own
+     * resource -- which is the region -- so the view is self-contained. */
+    using design_t = traccc::detector_design_description;
+    using cond_t   = traccc::detector_conditions_description;
+
+    if (hdr->design_view_bytes != sizeof(typename design_t::view)) {
+        refuse("design view is " + std::to_string(hdr->design_view_bytes) +
+               " bytes in region, " + std::to_string(sizeof(typename design_t::view)) +
+               " here");
+    }
+    if (hdr->cond_view_bytes != sizeof(typename cond_t::view)) {
+        refuse("conditions view is " + std::to_string(hdr->cond_view_bytes) +
+               " bytes in region, " + std::to_string(sizeof(typename cond_t::view)) +
+               " here");
+    }
+
+    typename design_t::view designView;
+    std::memcpy(&designView, hdr->design_view, sizeof(designView));
+    typename cond_t::view condView;
+    std::memcpy(&condView, hdr->cond_view, sizeof(condView));
+
+    /* The design's device buffer needs a per-module capacity because the bin
+     * edges are jagged and the buffer is resizable. Those capacities are read
+     * from the adopted view rather than from a host container we no longer
+     * build. */
+    typename design_t::const_device design{designView};
+    std::vector<unsigned int> descr_sizes(design.size());
+    for (std::size_t i = 0; i < design.size(); ++i) {
+        const auto this_design = design.at(i);
+        descr_sizes[i] = std::max(
+            static_cast<unsigned int>(this_design.bin_edges_x().size()),
+            static_cast<unsigned int>(this_design.bin_edges_y().size()));
+    }
+    m_device_det_descr = typename design_t::buffer(
+        descr_sizes, *m_device_mr, &m_host_mr,
+        vecmem::data::buffer_type::resizable);
+    m_copy.setup(m_device_det_descr)->wait();
+    m_copy(designView, m_device_det_descr)->wait();
+
+    typename cond_t::const_device cond{condView};
+    m_device_det_cond = typename cond_t::buffer(
+        static_cast<typename cond_t::buffer::size_type>(cond.size()),
+        *m_device_mr);
+    m_copy.setup(m_device_det_cond)->wait();
+    m_copy(condView, m_device_det_cond)->wait();
+
+    // The module index -> geometry id lookup, built from the adopted conditions.
+    m_geomIdMap.clear();
+    m_geomIdMap.reserve(cond.geometry_id().size());
+    for (unsigned int i = 0; i < cond.geometry_id().size(); ++i) {
+        m_geomIdMap[cond.geometry_id()[i].value()] = i;
+    }
+
     std::cout << "Adopted detector from " << shm_name << ": "
               << (static_cast<double>(hdr->payload_bytes) / (1024.0 * 1024.0))
               << " MB, " << hdr->n_volumes << " volumes, " << hdr->n_surfaces
               << " surfaces, " << hdr->n_transforms
-              << " transforms -- no JSON parsed" << std::endl;
+              << " transforms, " << hdr->n_modules << " modules, "
+              << hdr->n_conditions
+              << " conditions entries -- no JSON parsed" << std::endl;
 }
 
 TracccResults TracccGpuStandalone::run(

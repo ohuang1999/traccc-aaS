@@ -1,6 +1,6 @@
 --- a/backend/traccc-gpu/CMakeLists.txt
 +++ b/backend/traccc-gpu/CMakeLists.txt
-@@ -75,27 +75,32 @@
+@@ -75,27 +75,30 @@
  # FetchContent requires us to include the transitive closure of all
  # repos that we depend on so that we can override the tags.
  #
@@ -12,9 +12,7 @@
 +# Targets.cmake -- a gap in the ATLAS externals packaging -- AND it uses that same
 +# target as its include guard. So find_package(TritonCommon) either errors on the
 +# missing target, or, if the target is pre-defined, silently imports nothing.
-+# Including the targets file directly sidesteps both. The json header
-+# (triton/common/triton_json.h) IS installed and is header-only, so declaring the
-+# interface target by hand is enough; rapidjson comes from LCG.
++# Including the targets file directly sidesteps both.
 +find_file(TRITON_COMMON_TARGETS TritonCommonTargets.cmake
 +          PATH_SUFFIXES lib/cmake/TritonCommon REQUIRED)
 +include(${TRITON_COMMON_TARGETS})
@@ -53,28 +51,23 @@
  
  # 
  # Traccc dependencies
-@@ -103,12 +108,41 @@
+@@ -103,11 +106,35 @@
  find_package(covfie REQUIRED)
  find_package(traccc REQUIRED)
  
 -# Work around an upstream ACTS packaging bug. 
 +# Work around an upstream ACTS packaging bug: the exported targets advertise an
-+# eigen3 directory inside the ACTS include tree that is not actually installed.
-+# In the image that directory happens to exist; in the ATLAS release it does not,
-+# so CMake refuses at generate time. Point every offending entry at the real
-+# Eigen instead of assuming a fixed location.
++# eigen3 directory inside the ACTS include tree that the release does not install.
 +find_path(REAL_EIGEN3_INCLUDE_DIR signature_of_eigen3_matrix_library
 +          PATH_SUFFIXES eigen3)
 +if(NOT REAL_EIGEN3_INCLUDE_DIR)
 +  message(FATAL_ERROR "Eigen3 not found; cannot repair the ACTS include paths")
 +endif()
-+
  if(TARGET Eigen3::Eigen)
    set_target_properties(Eigen3::Eigen PROPERTIES
 -    INTERFACE_INCLUDE_DIRECTORIES "${traccc_INCLUDE_DIR}/eigen3")
 +    INTERFACE_INCLUDE_DIRECTORIES "${REAL_EIGEN3_INCLUDE_DIR}")
  endif()
- 
 +foreach(_tgt traccc::core traccc::io traccc::device_common traccc::cuda
 +             traccc::cuda_utils detray::core detray::io)
 +  if(TARGET ${_tgt})
@@ -93,11 +86,10 @@
 +    endif()
 +  endif()
 +endforeach()
-+
+ 
  #
  # The backend must be built into a shared library. Use an ldscript to
- # hide all symbols except for the TRITONBACKEND API.
-@@ -149,20 +183,18 @@
+@@ -149,20 +176,18 @@
  target_link_libraries(
    triton-traccc-backend
    PRIVATE
@@ -123,32 +115,3 @@
      detray::io
      rt          # shm_open, for the detray-in-shared-memory path
  )
---- a/standalone/src/TracccGpuStandalone.hpp
-+++ b/standalone/src/TracccGpuStandalone.hpp
-@@ -72,7 +72,6 @@
- #include "traccc/io/read_detector_description.hpp"
- 
- // algorithm options
--#include "traccc/options/detector.hpp"
- 
- // Set the CUDA device to use, and hand the ID back for stream construction.
- static int setCudaDevice(int deviceID)
-@@ -255,7 +254,17 @@
- 
-     // program configuration 
-     /// detector options
--    traccc::opts::detector m_detector_opts;
-+    /* The geometry file paths.
-+     *
-+     * These were a traccc::opts::detector, a command-line-options helper that
-+     * only ever carried these strings. The ATLAS release ships traccc without
-+     * its options component, and nothing here needs the option parsing, so the
-+     * strings stand on their own. */
-+    struct {
-+        std::string detector_file;
-+        std::string digitization_file;
-+        std::string conditions_file;
-+    } m_detector_opts;
-     /// Configuration for clustering
-     traccc::clustering_config m_clustering_config;
-     /// Configuration for the seed finding
